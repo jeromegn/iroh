@@ -196,6 +196,13 @@ impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
             .unwrap_or(false)
     }
 
+    /// Total number of peers known for a topic
+    pub fn peers_count(&self, topic: &TopicId) -> usize {
+        self.state(topic)
+            .map(|s| s.peers_count())
+            .unwrap_or_default()
+    }
+
     /// Handle an [`InEvent`]
     ///
     /// This returns an iterator of [`OutEvent`]s that must be processed.

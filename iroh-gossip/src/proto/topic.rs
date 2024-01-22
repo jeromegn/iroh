@@ -311,6 +311,11 @@ impl<PI: PeerIdentity, R: Rng> State<PI, R> {
     pub fn has_active_peers(&self) -> bool {
         !self.swarm.active_view.is_empty()
     }
+
+    /// Total number of peers in the swarm
+    pub fn peers_count(&self) -> usize {
+        self.swarm.active_view.len() + self.swarm.passive_view.len()
+    }
 }
 
 /// Statistics for the protocol state of a topic
