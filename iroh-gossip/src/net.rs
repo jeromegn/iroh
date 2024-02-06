@@ -84,12 +84,7 @@ impl Gossip {
     ) -> Self {
         let peer_id = endpoint.node_id();
         let dialer = Dialer::new(endpoint.clone());
-        let state = proto::State::new(
-            peer_id,
-            encode_peer_data(my_addr).unwrap(),
-            config,
-            rand::rngs::StdRng::from_entropy(),
-        );
+        let state = proto::State::new(peer_id, config, rand::rngs::StdRng::from_entropy());
         let (to_actor_tx, to_actor_rx) = mpsc::channel(TO_ACTOR_CAP);
         let (in_event_tx, in_event_rx) = mpsc::channel(IN_EVENT_CAP);
         let (on_endpoints_tx, on_endpoints_rx) = mpsc::channel(ON_ENDPOINTS_CAP);
@@ -97,6 +92,7 @@ impl Gossip {
         let me = endpoint.node_id().fmt_short();
         let actor = Actor {
             endpoint,
+            me_data: encode_peer_data(my_addr).unwrap(),
             state,
             dialer,
             to_actor_rx,
@@ -327,6 +323,7 @@ enum ToActor {
 struct Actor {
     /// Protocol state
     state: proto::State<PublicKey, StdRng>,
+    me_data: PeerData,
     endpoint: MagicEndpoint,
     /// Dial machine to connect to peers
     dialer: Dialer,
@@ -375,7 +372,10 @@ impl Actor {
                         Some(endpoints) => {
                             let addr = self.endpoint.my_addr_with_endpoints(endpoints)?;
                             let peer_data = encode_peer_data(&addr.info)?;
-                            self.handle_in_event(InEvent::UpdatePeerData(peer_data), Instant::now()).await?;
+                            let topics = self.state.topics().copied().collect::<Vec<_>>();
+                            for topic_id in topics {
+                                self.handle_in_event(InEvent::UpdatePeerData(topic_id, peer_data.clone()), Instant::now()).await?;
+                            }
                         }
                         None => {
                             debug!("endpoint change handle dropped, stopping gossip actor");
@@ -455,8 +455,11 @@ impl Actor {
                 }
             }
             ToActor::Join(topic_id, peers, reply) => {
-                self.handle_in_event(InEvent::Command(topic_id, Command::Join(peers)), now)
-                    .await?;
+                self.handle_in_event(
+                    InEvent::Command(topic_id, Command::Join(peers, Some(self.me_data.clone()))),
+                    now,
+                )
+                .await?;
                 if self.state.has_active_peers(&topic_id) {
                     // If the active_view contains at least one peer, reply now
                     reply.send(Ok(topic_id)).ok();

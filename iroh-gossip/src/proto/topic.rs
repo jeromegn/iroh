@@ -7,9 +7,10 @@ use std::{
 
 use bytes::Bytes;
 use derive_more::From;
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 use rand_core::SeedableRng;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use super::plumtree::{self, GossipEvent, InEvent as GossipIn, Scope};
 use super::{
@@ -158,7 +159,7 @@ pub enum Command<PI> {
     ///
     /// If the list of peers is empty, will prepare the state and accept incoming join requests,
     /// but only become operational after the first join request by another peer.
-    Join(Vec<PI>),
+    Join(Vec<PI>, Option<PeerData>),
     /// Broadcast a message for this topic.
     Broadcast(#[debug("<{}b>", _0.len())] Bytes, Scope),
     /// Leave this topic and drop all state.
@@ -187,6 +188,8 @@ pub struct State<PI, R> {
     pub(crate) gossip: plumtree::State<PI>,
     outbox: VecDeque<OutEvent<PI>>,
     stats: Stats,
+    config: Config,
+    rng: R,
 }
 
 impl<PI: PeerIdentity> State<PI, rand::rngs::StdRng> {
@@ -203,15 +206,17 @@ impl<PI, R> State<PI, R> {
     }
 }
 
-impl<PI: PeerIdentity, R: Rng> State<PI, R> {
+impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
     /// Initialize the local state with a custom random number generator.
     pub fn with_rng(me: PI, me_data: Option<PeerData>, config: Config, rng: R) -> Self {
         Self {
-            swarm: hyparview::State::new(me, me_data, config.membership, rng),
-            gossip: plumtree::State::new(me, config.broadcast),
+            swarm: hyparview::State::new(me, me_data, config.membership.clone(), rng.clone()),
+            gossip: plumtree::State::new(me, config.broadcast.clone()),
             me,
             outbox: VecDeque::new(),
             stats: Stats::default(),
+            config,
+            rng,
         }
     }
 
@@ -227,9 +232,12 @@ impl<PI: PeerIdentity, R: Rng> State<PI, R> {
         // Process the event, store out events in outbox.
         match event {
             InEvent::Command(command) => match command {
-                Command::Join(peers) => {
-                    for peer in peers {
-                        self.swarm.handle(SwarmIn::RequestJoin(peer), now, io);
+                Command::Join(peers, peer_data) => {
+                    let max_join = self.config.membership.active_view_capacity
+                        + self.config.membership.passive_view_capacity;
+                    for peer in peers.choose_multiple(&mut self.rng, max_join) {
+                        self.swarm
+                            .handle(SwarmIn::RequestJoin(*peer, peer_data.clone()), now, io);
                     }
                 }
                 Command::Broadcast(data, scope) => {
@@ -315,6 +323,11 @@ impl<PI: PeerIdentity, R: Rng> State<PI, R> {
     /// Total number of peers in the swarm
     pub fn peers_count(&self) -> usize {
         self.swarm.active_view.len() + self.swarm.passive_view.len()
+    }
+
+    /// Get a peer's [`PeerData`]
+    pub fn peer_data(&self, id: &PI) -> Option<PeerData> {
+        self.swarm.peer_data(id)
     }
 }
 

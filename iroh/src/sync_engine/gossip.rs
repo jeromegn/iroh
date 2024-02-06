@@ -205,6 +205,7 @@ impl GossipActor {
                     .send(ToLiveActor::NeighborDown { namespace, peer })
                     .await?;
             }
+            iroh_gossip::proto::Event::UpdatePeerData(_, _) => {}
         }
         Ok(())
     }

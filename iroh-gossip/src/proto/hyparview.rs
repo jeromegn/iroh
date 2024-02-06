@@ -15,7 +15,7 @@ use derive_more::{From, Sub};
 use rand::rngs::ThreadRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, trace};
 
 use super::{util::IndexSet, PeerData, PeerIdentity, PeerInfo, IO};
 
@@ -29,7 +29,7 @@ pub enum InEvent<PI> {
     /// A peer was disconnected on the IO layer.
     PeerDisconnected(PI),
     /// Send a join request to a peer.
-    RequestJoin(PI),
+    RequestJoin(PI, Option<PeerData>),
     /// Update the peer data that is transmitted on join requests.
     UpdatePeerData(PeerData),
     /// Quit the swarm, informing peers about us leaving.
@@ -285,7 +285,7 @@ where
                 Timer::PendingNeighborRequest(peer) => self.handle_pending_neighbor_timer(peer, io),
             },
             InEvent::PeerDisconnected(peer) => self.handle_disconnect(peer, io),
-            InEvent::RequestJoin(peer) => self.handle_join(peer, io),
+            InEvent::RequestJoin(peer, peer_data) => self.handle_join(peer, peer_data, io),
             InEvent::UpdatePeerData(data) => {
                 self.me_data = Some(data);
             }
@@ -323,16 +323,13 @@ where
         }
 
         // Disconnect from passive nodes right after receiving a message.
-        if !is_disconnect && !self.active_view.contains(&from) {
+        if !is_disconnect && from != self.me && !self.active_view.contains(&from) {
             io.push(OutEvent::DisconnectPeer(from));
         }
     }
 
-    fn handle_join(&mut self, peer: PI, io: &mut impl IO<PI>) {
-        io.push(OutEvent::SendMessage(
-            peer,
-            Message::Join(self.me_data.clone()),
-        ));
+    fn handle_join(&mut self, peer: PI, peer_data: Option<PeerData>, io: &mut impl IO<PI>) {
+        io.push(OutEvent::SendMessage(peer, Message::Join(peer_data)));
     }
 
     fn handle_disconnect(&mut self, peer: PI, io: &mut impl IO<PI>) {
@@ -414,6 +411,8 @@ where
         // in p’s active view, p will forward the request to a random node in its active view
         // (different from the one from which the request was received)."
         if !self.active_view.contains(&message.peer.id) {
+            trace!("forwarding to random node...");
+
             match self
                 .active_view
                 .pick_random_without(&[&sender], &mut self.rng)
@@ -422,6 +421,7 @@ where
                     unreachable!("if the peer was not added, there are at least two peers in our active view.");
                 }
                 Some(next) => {
+                    trace!("selected at random: {:?}", next);
                     let message = Message::ForwardJoin(ForwardJoin {
                         peer: message.peer,
                         ttl: message.ttl.next(),
@@ -453,6 +453,11 @@ where
     fn peer_info(&self, id: &PI) -> PeerInfo<PI> {
         let data = self.peer_data.get(id).cloned();
         PeerInfo { id: *id, data }
+    }
+
+    /// Get a peer's [`PeerData`]
+    pub fn peer_data(&self, id: &PI) -> Option<PeerData> {
+        self.peer_data.get(id).cloned()
     }
 
     fn insert_peer_info(&mut self, peer_info: PeerInfo<PI>, io: &mut impl IO<PI>) {
@@ -682,6 +687,11 @@ where
         if self.active_view.contains(&peer) || peer == self.me {
             return true;
         }
+        trace!(
+            other = ?peer,
+            "adding active w/ priority: {priority:?}, full? {}",
+            self.active_is_full()
+        );
         match (priority, self.active_is_full()) {
             (Priority::High, is_full) => {
                 if is_full {

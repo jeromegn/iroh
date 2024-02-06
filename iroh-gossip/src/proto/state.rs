@@ -8,7 +8,7 @@ use std::{
 use iroh_metrics::{inc, inc_by};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::{
     metrics::Metrics,
@@ -80,7 +80,7 @@ pub enum InEvent<PI> {
     /// Peer disconnected on the network level.
     PeerDisconnected(PI),
     /// Update the opaque peer data about yourself.
-    UpdatePeerData(PeerData),
+    UpdatePeerData(TopicId, PeerData),
 }
 
 /// Output event from the protocol state.
@@ -120,7 +120,9 @@ impl<PI> From<InEvent<PI>> for InEventMapped<PI> {
                 Self::TopicEvent(topic, topic::InEvent::TimerExpired(timer))
             }
             InEvent::PeerDisconnected(peer) => Self::All(topic::InEvent::PeerDisconnected(peer)),
-            InEvent::UpdatePeerData(data) => Self::All(topic::InEvent::UpdatePeerData(data)),
+            InEvent::UpdatePeerData(topic, data) => {
+                Self::TopicEvent(topic, topic::InEvent::UpdatePeerData(data))
+            }
         }
     }
 }
@@ -136,7 +138,6 @@ impl<PI> From<InEvent<PI>> for InEventMapped<PI> {
 #[derive(Debug)]
 pub struct State<PI, R> {
     me: PI,
-    me_data: PeerData,
     config: Config,
     rng: R,
     states: HashMap<TopicId, topic::State<PI, R>>,
@@ -151,10 +152,9 @@ impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
     /// (which can be updated over time).
     /// For the protocol to perform as recommended in the papers, the [`Config`] should be
     /// identical for all nodes in the network.
-    pub fn new(me: PI, me_data: PeerData, config: Config, rng: R) -> Self {
+    pub fn new(me: PI, config: Config, rng: R) -> Self {
         Self {
             me,
-            me_data,
             config,
             rng,
             states: Default::default(),
@@ -211,7 +211,7 @@ impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
         event: InEvent<PI>,
         now: Instant,
     ) -> impl Iterator<Item = OutEvent<PI>> + '_ {
-        trace!("gossp event: {event:?}");
+        trace!("gossip event: {event:?}");
         track_in_event(&event);
 
         let event: InEventMapped<PI> = event.into();
@@ -224,11 +224,12 @@ impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
                     self.peer_topics.entry(*from).or_default().insert(topic);
                 }
                 // when receiving a join command, initialize state if it doesn't exist
-                if matches!(&event, topic::InEvent::Command(Command::Join(_peers))) {
+                if let topic::InEvent::Command(Command::Join(_peers, peer_data)) = &event {
+                    debug!("initializing state for topic {topic}");
                     if let hash_map::Entry::Vacant(e) = self.states.entry(topic) {
                         e.insert(topic::State::with_rng(
                             self.me,
-                            Some(self.me_data.clone()),
+                            peer_data.clone(),
                             self.config.clone(),
                             self.rng.clone(),
                         ));
@@ -253,9 +254,6 @@ impl<PI: PeerIdentity, R: Rng + Clone> State<PI, R> {
             }
             // when a peer disconnected on the network level, forward event to all states
             InEventMapped::All(event) => {
-                if let topic::InEvent::UpdatePeerData(data) = &event {
-                    self.me_data = data.clone();
-                }
                 for (topic, state) in self.states.iter_mut() {
                     let out = state.handle(event.clone(), now);
                     for event in out {

@@ -281,25 +281,22 @@ impl Simulator {
     pub fn init(&mut self) {
         for i in 0..self.simulator_config.peers_count {
             let rng = rand_chacha::ChaCha12Rng::seed_from_u64(99);
-            self.network.push(State::new(
-                i,
-                Default::default(),
-                self.protocol_config.clone(),
-                rng.clone(),
-            ));
+            self.network
+                .push(State::new(i, self.protocol_config.clone(), rng.clone()));
         }
     }
     pub fn bootstrap(&mut self) {
-        self.network.command(0, TOPIC, Command::Join(vec![]));
+        self.network.command(0, TOPIC, Command::Join(vec![], None));
         for i in 1..self.simulator_config.bootstrap_count {
-            self.network.command(i, TOPIC, Command::Join(vec![0]));
+            self.network.command(i, TOPIC, Command::Join(vec![0], None));
         }
         self.network.ticks(self.simulator_config.bootstrap_ticks);
         let _ = self.network.events();
 
         for i in self.simulator_config.bootstrap_count..self.simulator_config.peers_count {
             let contact = i % self.simulator_config.bootstrap_count;
-            self.network.command(i, TOPIC, Command::Join(vec![contact]));
+            self.network
+                .command(i, TOPIC, Command::Join(vec![contact], None));
             self.network.ticks(self.simulator_config.join_ticks);
             let _ = self.network.events();
         }
